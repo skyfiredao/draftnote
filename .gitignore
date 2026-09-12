@@ -1,0 +1,11 @@
+!*.json
+go-wails/frontend/node_modules/
+go-wails/frontend/dist/*
+!go-wails/frontend/dist/.gitkeep
+go-wails/build/bin/
+backend/draftnote-backend
+spec/
+rust-tauri/src-tauri/target/
+rust-tauri/src-tauri/gen/
+rust-tauri/frontend/node_modules/
+rust-tauri/frontend/dist/

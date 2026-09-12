@@ -1,0 +1,481 @@
+name: DraftNote build check
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_go_backend:
+        description: 'backend binary'
+        type: boolean
+        default: false
+      build_go_docker:
+        description: 'backend Docker image'
+        type: boolean
+        default: false
+      build_go_mac:
+        description: 'go-wails macOS app (dmg)'
+        type: boolean
+        default: false
+      build_go_windows:
+        description: 'go-wails Windows app (exe)'
+        type: boolean
+        default: false
+      build_rust_mac:
+        description: 'rust-tauri macOS app (dmg)'
+        type: boolean
+        default: true
+      build_rust_windows:
+        description: 'rust-tauri Windows app (exe)'
+        type: boolean
+        default: false
+      build_rust_ios:
+        description: 'rust-tauri iOS app'
+        type: boolean
+        default: true
+      publish_release:
+        description: 'Release'
+        type: boolean
+        default: false
+      run_tests:
+        description: 'Run tests'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  go_backend:
+    if: ${{ inputs.build_go_backend || inputs.build_go_docker || inputs.publish_release }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    defaults:
+      run:
+        working-directory: draftnote/backend
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.26.0'
+          cache-dependency-path: draftnote/backend/go.mod
+      - name: Vet and test
+        if: ${{ inputs.run_tests }}
+        run: |
+          go vet ./...
+          go test ./...
+      - name: Build backend binary amd64
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: amd64
+        run: go build -trimpath -ldflags "-s -w" -o draftnote-backend-linux-amd64 .
+      - name: Upload backend binary amd64
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: draftnote-backend-linux-amd64
+          path: draftnote/backend/draftnote-backend-linux-amd64
+          retention-days: 7
+      - name: Build backend binary arm64
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: arm64
+        run: go build -trimpath -ldflags "-s -w" -o draftnote-backend-linux-arm64 .
+      - name: Upload backend binary arm64
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: draftnote-backend-linux-arm64
+          path: draftnote/backend/draftnote-backend-linux-arm64
+          retention-days: 7
+      - name: Build backend image
+        if: ${{ inputs.build_go_docker || inputs.publish_release }}
+        run: |
+          cp draftnote-backend-linux-amd64 draftnote-backend
+          docker build -t draftnote-backend:ci -f Dockerfile .
+      - name: Save backend image
+        if: ${{ inputs.build_go_docker || inputs.publish_release }}
+        run: docker save draftnote-backend:ci | gzip > /tmp/draftnote-backend-docker-image-linux-amd64.tar.gz
+      - name: Upload backend image
+        if: ${{ inputs.build_go_docker || inputs.publish_release }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: draftnote-backend-docker-image-linux-amd64
+          path: /tmp/draftnote-backend-docker-image-linux-amd64.tar.gz
+          retention-days: 7
+      - name: Publish backend to release
+        if: ${{ inputs.publish_release }}
+        run: |
+          gh release create draftnote-release \
+            --title "draftnote release" \
+            --notes "draftnote build" || true
+          gh release upload draftnote-release draftnote-backend-linux-amd64 --clobber
+          gh release upload draftnote-release draftnote-backend-linux-arm64 --clobber
+          gh release upload draftnote-release /tmp/draftnote-backend-docker-image-linux-amd64.tar.gz --clobber
+
+  go_mac:
+    if: ${{ inputs.build_go_mac }}
+    runs-on: macos-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: draftnote/go-wails
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.26.0'
+          cache-dependency-path: draftnote/go-wails/go.sum
+
+      - name: Vet and test
+        if: ${{ inputs.run_tests }}
+        run: |
+          go vet ./internal/... ./e2e/...
+          go test ./internal/... ./e2e/...
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: draftnote/go-wails/frontend/package-lock.json
+
+      - name: Cache node_modules
+        id: cache-node-modules
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: draftnote/go-wails/frontend/node_modules
+          key: node-modules-${{ runner.os }}-node20-${{ hashFiles('draftnote/go-wails/frontend/package-lock.json') }}
+
+      - name: Install frontend deps
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        working-directory: draftnote/go-wails/frontend
+        run: npm ci
+
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.10.1
+
+      - name: Install librsvg
+        run: |
+          brew untap aws/tap 2>/dev/null || true
+          brew install librsvg
+
+      - name: Render appicon
+        run: rsvg-convert -w 1024 -h 1024 build/appicon.svg -o build/appicon.png
+
+      - name: Build iconset
+        run: |
+          mkdir -p AppIcon.iconset
+          for pair in 16:16 16:32 32:32 32:64 128:128 128:256 256:256 256:512 512:512 512:1024; do
+            base=${pair%:*}
+            size=${pair##*:}
+            if [ "$base" != "$size" ]; then
+              rsvg-convert -w $size -h $size build/appicon.svg -o AppIcon.iconset/icon_${base}x${base}@2x.png
+            else
+              rsvg-convert -w $size -h $size build/appicon.svg -o AppIcon.iconset/icon_${base}x${base}.png
+            fi
+          done
+          mkdir -p build/darwin
+          iconutil -c icns AppIcon.iconset -o build/darwin/icons.icns
+
+      - name: Build
+        run: wails build
+
+      - name: Replace bundle icon
+        run: |
+          APP=build/bin/draftnote.app
+          for icns in "$APP"/Contents/Resources/*.icns; do
+            cp -f build/darwin/icons.icns "$icns"
+          done
+          touch "$APP"
+
+      - name: Package app as dmg
+        run: |
+          cd build/bin
+          hdiutil create -volname DraftNote -srcfolder draftnote.app -ov -format UDZO draftnote-macos.dmg
+
+      - name: Upload macOS dmg
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: draftnote-macos
+          path: draftnote/go-wails/build/bin/draftnote-macos.dmg
+          retention-days: 7
+
+  go_windows:
+    if: ${{ inputs.build_go_windows }}
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: draftnote/go-wails
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.26.0'
+          cache-dependency-path: draftnote/go-wails/go.sum
+
+      - name: Vet and test
+        if: ${{ inputs.run_tests }}
+        run: |
+          go vet ./internal/... ./e2e/...
+          go test ./internal/... ./e2e/...
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: draftnote/go-wails/frontend/package-lock.json
+
+      - name: Cache node_modules
+        id: cache-node-modules
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: draftnote/go-wails/frontend/node_modules
+          key: node-modules-${{ runner.os }}-node20-${{ hashFiles('draftnote/go-wails/frontend/package-lock.json') }}
+
+      - name: Install frontend deps
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        working-directory: draftnote/go-wails/frontend
+        run: npm ci
+
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.10.1
+
+      - name: Build
+        run: wails build
+
+      - name: Upload Windows exe
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: draftnote-windows
+          path: draftnote/go-wails/build/bin/draftnote.exe
+          retention-days: 7
+
+  rust_mac:
+    if: ${{ github.event_name == 'push' || inputs.build_rust_mac || inputs.publish_release }}
+    runs-on: macos-latest
+    permissions:
+      contents: write
+      actions: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: draftnote/rust-tauri
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Setup Rust stable
+        run: rustup toolchain install stable --profile minimal --no-self-update && rustup default stable
+      - name: Cache cargo
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            draftnote/rust-tauri/src-tauri/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('draftnote/rust-tauri/src-tauri/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+      - name: Cargo test
+        if: ${{ github.event_name == 'push' || inputs.run_tests }}
+        working-directory: draftnote/rust-tauri/src-tauri
+        run: cargo test
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: draftnote/rust-tauri/frontend/package-lock.json
+      - name: Install frontend deps
+        working-directory: draftnote/rust-tauri/frontend
+        run: npm ci
+      - name: Build frontend
+        working-directory: draftnote/rust-tauri/frontend
+        run: npm run build
+      - name: Build macOS dmg
+        run: npx --yes @tauri-apps/cli@2 build --features desktop --bundles dmg
+      - name: Rename dmg to stable filename
+        run: |
+          src="$(find src-tauri/target/release/bundle/dmg -name '*.dmg' | head -1)"
+          cp "$src" src-tauri/target/release/bundle/dmg/draftnote-mac-arm64.dmg
+      - name: Upload macOS dmg
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: draftnote-mac-arm64
+          path: draftnote/rust-tauri/src-tauri/target/release/bundle/dmg/draftnote-mac-arm64.dmg
+          retention-days: 7
+      - name: Publish dmg to release
+        if: ${{ inputs.publish_release }}
+        run: |
+          gh release create draftnote-release \
+            --title "draftnote release" \
+            --notes "draftnote macOS dmg" || true
+          gh release upload draftnote-release \
+            src-tauri/target/release/bundle/dmg/draftnote-mac-arm64.dmg --clobber
+      - name: Prune old cargo caches
+        continue-on-error: true
+        run: |
+          prefix="cargo-${{ runner.os }}-"
+          ids=$(gh cache list --ref "${{ github.ref }}" -L 100 --json id,key,createdAt \
+            -q "[.[] | select(.key | startswith(\"$prefix\"))] | sort_by(.createdAt) | reverse | .[1:][].id")
+          for id in $ids; do gh cache delete "$id" || true; done
+
+  rust_windows:
+    if: ${{ inputs.build_rust_windows || inputs.publish_release }}
+    runs-on: windows-latest
+    permissions:
+      contents: write
+      actions: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: draftnote/rust-tauri
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Setup Rust stable
+        run: rustup toolchain install stable --profile minimal --no-self-update && rustup default stable
+      - name: Cache cargo
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            draftnote/rust-tauri/src-tauri/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('draftnote/rust-tauri/src-tauri/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+      - name: Cargo test
+        if: ${{ inputs.run_tests }}
+        working-directory: draftnote/rust-tauri/src-tauri
+        run: cargo test
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: draftnote/rust-tauri/frontend/package-lock.json
+      - name: Install frontend deps
+        working-directory: draftnote/rust-tauri/frontend
+        run: npm ci
+      - name: Build frontend
+        working-directory: draftnote/rust-tauri/frontend
+        run: npm run build
+      - name: Build Windows app
+        run: npx --yes @tauri-apps/cli@2 build --features desktop --no-bundle
+      - name: Package exe
+        working-directory: draftnote/rust-tauri/src-tauri/target/release
+        run: |
+          cp draftnote.exe draftnote-win-amd64.exe
+          7z a -tzip -mx=9 draftnote-win-amd64.zip draftnote-win-amd64.exe
+      - name: Upload Windows exe
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: draftnote-win-amd64
+          path: draftnote/rust-tauri/src-tauri/target/release/draftnote-win-amd64.zip
+          retention-days: 7
+      - name: Publish exe to release
+        if: ${{ inputs.publish_release }}
+        run: |
+          gh release create draftnote-release \
+            --title "draftnote release" \
+            --notes "draftnote build" || true
+          gh release upload draftnote-release \
+            src-tauri/target/release/draftnote-win-amd64.zip --clobber
+      - name: Prune old cargo caches
+        continue-on-error: true
+        run: |
+          prefix="cargo-${{ runner.os }}-"
+          ids=$(gh cache list --ref "${{ github.ref }}" -L 100 --json id,key,createdAt \
+            -q "[.[] | select(.key | startswith(\"$prefix\"))] | sort_by(.createdAt) | reverse | .[1:][].id")
+          for id in $ids; do gh cache delete "$id" || true; done
+
+  rust_ios:
+    if: ${{ github.event_name == 'push' || inputs.build_rust_ios || inputs.publish_release }}
+    runs-on: macos-latest
+    permissions:
+      contents: write
+      actions: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: draftnote/rust-tauri
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Setup Rust stable
+        run: rustup toolchain install stable --profile minimal --no-self-update && rustup default stable
+      - name: Add iOS target
+        run: rustup target add aarch64-apple-ios-sim
+      - name: Cache cargo
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            draftnote/rust-tauri/src-tauri/target
+          key: cargo-ios-${{ runner.os }}-${{ hashFiles('draftnote/rust-tauri/src-tauri/Cargo.lock') }}
+          restore-keys: cargo-ios-${{ runner.os }}-
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: draftnote/rust-tauri/frontend/package-lock.json
+      - name: Install frontend deps
+        working-directory: draftnote/rust-tauri/frontend
+        run: npm ci
+      - name: Build frontend
+        working-directory: draftnote/rust-tauri/frontend
+        run: npm run build
+      - name: Cache tauri CLI
+        id: tauri-cli-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cargo/bin/cargo-tauri
+          key: tauri-cli-2.11.4-${{ runner.os }}
+      - name: Install tauri CLI
+        if: steps.tauri-cli-cache.outputs.cache-hit != 'true'
+        run: cargo install tauri-cli --version 2.11.4 --locked
+      - name: Init iOS project
+        run: cargo tauri ios init
+      - name: Regenerate opaque app icons
+        run: |
+          brew install librsvg
+          rsvg-convert -w 1024 -h 1024 src-tauri/icons/appicon.svg -o /tmp/appicon.png
+          cargo tauri icon /tmp/appicon.png
+      - name: Build iOS simulator app
+        run: cargo tauri ios build --target aarch64-sim
+      - name: Package app
+        run: |
+          app="$(find ~/Library/Developer/Xcode/DerivedData -type d -path '*Release-iphonesimulator*' -name '*.app' 2>/dev/null | head -1)"
+          if [ -z "$app" ]; then
+            app="$(find src-tauri/gen/apple ~/Library/Developer/Xcode/DerivedData -type d -name '*.app' 2>/dev/null | grep -i simulator | head -1)"
+          fi
+          test -n "$app"
+          echo "picked: $app"
+          rm -rf dist && mkdir -p dist
+          cp -R "$app" dist/draftnote.app
+          ditto -c -k --keepParent dist/draftnote.app draftnote-ios-arm64.app.zip
+      - name: Upload app
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: draftnote-ios-arm64
+          path: draftnote/rust-tauri/dist
+          retention-days: 7
+      - name: Publish app to release
+        if: ${{ inputs.publish_release }}
+        run: |
+          gh release create draftnote-release \
+            --title "draftnote release" \
+            --notes "draftnote build" || true
+          gh release upload draftnote-release \
+            draftnote-ios-arm64.app.zip --clobber
+      - name: Prune old cargo caches
+        continue-on-error: true
+        run: |
+          prefix="cargo-ios-${{ runner.os }}-"
+          ids=$(gh cache list --ref "${{ github.ref }}" -L 100 --json id,key,createdAt \
+            -q "[.[] | select(.key | startswith(\"$prefix\"))] | sort_by(.createdAt) | reverse | .[1:][].id")
+          for id in $ids; do gh cache delete "$id" || true; done

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <circle cx="512" cy="512" r="480" fill="#ed8b4c"/>
+  <text x="512" y="700" text-anchor="middle" font-size="560" font-weight="800" font-family="Helvetica, Arial, sans-serif" fill="#ffffff" letter-spacing="-40">DN</text>
+</svg>

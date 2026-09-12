@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DraftNote</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <nav id="nav" tabindex="0">
+        <div class="nav-brand">
+          <svg class="brand-logo" viewBox="0 0 100 100" width="24" height="24" aria-hidden="true">
+            <circle class="brand-disc" cx="50" cy="50" r="46"/>
+            <text x="50" y="66" text-anchor="middle" font-size="44" font-weight="800" fill="#ffffff" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" letter-spacing="-4">DN</text>
+          </svg>
+          <span>DraftNote</span>
+        </div>
+        <div class="nav-item active" data-view="all">
+          <svg class="nav-icon nav-icon-accent" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+            <path d="M6 3h9l5 5v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z M15 3v5h5" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+          </svg>
+          <span>All Notes</span>
+        </div>
+        <div class="nav-item" data-view="trash">
+          <svg class="nav-icon nav-icon-accent" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+            <path d="M3 6h18 M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2 M6 6l1 14a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-14 M10 11v6 M14 11v6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <span>Trash</span>
+        </div>
+        <div class="nav-section">TAGS</div>
+        <div id="nav-tags"></div>
+        <div class="nav-item" data-view="untagged">
+          <svg class="nav-icon nav-icon-muted" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+            <path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z M7 7h.01 M3 3l18 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <span>Untagged</span>
+        </div>
+        <div class="nav-spacer"></div>
+        <button id="import-notes" class="nav-settings" title="Import Notes">
+          <svg class="nav-icon nav-icon-accent" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4 M7 10l5 5 5-5 M12 15V3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <span>Import Notes</span>
+        </button>
+        <button id="settings" class="nav-settings" title="Sync Settings">
+          <svg class="nav-icon nav-icon-accent" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+            <circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="2"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.09a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.09a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <span>Sync Settings</span>
+        </button>
+      </nav>
+      <div class="splitter" data-target="nav"></div>
+
+      <section id="list-col">
+        <div id="list-header">
+          <div id="search-wrap">
+            <svg class="search-icon" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+              <path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0z" fill="currentColor"/>
+            </svg>
+            <input id="search" type="text" placeholder="Search notes" />
+            <button id="search-clear" class="clear-btn" title="Clear">&#10005;</button>
+          </div>
+          <button id="new-note" class="icon-btn" title="New note">
+            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+              <path d="M14 4 L4 4 A2 2 0 0 0 2 6 L2 20 A2 2 0 0 0 4 22 L18 22 A2 2 0 0 0 20 20 L20 10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M18.5 2.5 L21.5 5.5 L13 14 L9 15 L10 11 z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
+        </div>
+        <ul id="note-list" tabindex="0"></ul>
+      </section>
+      <div class="splitter" data-target="list-col"></div>
+
+      <main id="editor-pane">
+        <div id="editor-toolbar">
+          <button id="toggle-nav" class="icon-btn" title="Toggle sidebar">&#9704;</button>
+          <div class="find-wrap">
+            <div class="find-input-wrap">
+              <svg class="search-icon" viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+                <path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0z" fill="currentColor"/>
+              </svg>
+              <input id="find" type="text" placeholder="Find in note" />
+              <button id="find-clear" class="clear-btn" title="Clear">&#10005;</button>
+            </div>
+            <span id="find-count"></span>
+          </div>
+          <div class="spacer"></div>
+          <div class="tag-wrap">
+            <svg class="tag-icon" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+              <path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z M7 7h.01" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <div id="tag-chips" class="tag-chips">
+              <input id="tag-input" type="text" placeholder="Add tag…" />
+            </div>
+          </div>
+          <button id="font-dec" class="icon-btn" title="Smaller text">A&minus;</button>
+          <button id="font-inc" class="icon-btn" title="Larger text">A&plus;</button>
+          <button id="preview" class="icon-btn" title="Preview markdown">
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+              <circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="2"/>
+            </svg>
+          </button>
+          <button id="toggle-theme" class="icon-btn" title="Toggle theme">&#9680;</button>
+        </div>
+        <div id="editor-area">
+          <div id="editor"></div>
+          <div id="preview-pane" class="hidden"></div>
+          <div id="find-scrollbar"></div>
+        </div>
+      </main>
+    </div>
+
+    <div id="ctx-menu" class="ctx-menu hidden">
+      <div class="ctx-item" data-action="pin">Pin to Top</div>
+      <div class="ctx-item" data-action="duplicate">Duplicate Note</div>
+      <div class="ctx-item" data-action="history">History…</div>
+      <div class="ctx-item" data-action="filetype-sh">Mark as Shell</div>
+      <div class="ctx-item" data-action="filetype-json">Mark as JSON</div>
+      <div class="ctx-item" data-action="filetype-md">Mark as Markdown</div>
+      <div class="ctx-item ctx-danger" data-action="trash">Move to Trash</div>
+      <div class="ctx-item" data-action="restore">Restore from Trash</div>
+      <div class="ctx-item ctx-danger" data-action="delete-permanent">Delete Permanently</div>
+    </div>
+
+    <div id="import-menu" class="ctx-menu hidden">
+      <div class="ctx-item" data-action="import-dir">From Directory…</div>
+      <div class="ctx-item" data-action="import-files">From Files…</div>
+    </div>
+
+    <div id="export-menu" class="ctx-menu hidden">
+      <div class="ctx-item" data-action="export-md">Export as Markdown</div>
+      <div class="ctx-item" data-action="export-txt">Export as Text</div>
+    </div>
+
+    <div id="settings-modal" class="modal hidden">
+      <div class="modal-card">
+        <h2>Sync Settings</h2>
+        <label class="field">
+          <span>Repo URL</span>
+          <input id="cfg-repourl" type="text" placeholder="https://github.com/user/repo" />
+        </label>
+        <label class="field">
+          <span>Server URL</span>
+          <input id="cfg-server-url" type="text" placeholder="optional; overrides repo host" />
+        </label>
+        <label class="field">
+          <span>Username</span>
+          <input id="cfg-username" type="text" placeholder="username" />
+        </label>
+        <label class="field">
+          <span>Token</span>
+          <input id="cfg-token" type="password" placeholder="access token" />
+        </label>
+        <label class="checkbox-field">
+          <input id="cfg-useapi" type="checkbox" />
+          <span>API mode</span>
+        </label>
+        <label class="field">
+          <span>Sync interval (seconds)</span>
+          <input id="cfg-interval" type="number" min="1" step="1" />
+        </label>
+        <div id="cfg-validate-msg" class="cfg-msg hidden"></div>
+        <div class="modal-actions">
+          <button id="cfg-validate" class="btn-plain">Validate</button>
+          <button id="cfg-cancel" class="btn-plain">Cancel</button>
+          <button id="cfg-save" class="btn-primary">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="revision-modal" class="modal hidden">
+      <div class="modal-card revision-card">
+        <div class="revision-header">
+          <h2>History</h2>
+          <button id="rev-close" class="icon-btn" title="Close">&#10005;</button>
+        </div>
+        <div class="revision-body">
+          <div id="rev-list" class="rev-list" tabindex="0"></div>
+          <div id="rev-diff" class="rev-diff"></div>
+        </div>
+        <div class="modal-actions">
+          <button id="rev-restore" class="btn-primary" disabled>Restore this version</button>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

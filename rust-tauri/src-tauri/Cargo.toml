@@ -1,0 +1,49 @@
+[package]
+name = "draftnote-core"
+version = "0.1.0"
+edition = "2021"
+description = "draftnote core (Rust port of the Go/Wails core)"
+
+[lib]
+name = "draftnote_core"
+path = "src/lib.rs"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "draftnote"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+chrono = { version = "0.4", features = ["serde"] }
+aes-gcm = "0.10"
+base64 = "0.22"
+rand = "0.8"
+regex = "1"
+sha1 = "0.10"
+sha2 = "0.10"
+hex = "0.4"
+url = "2"
+reqwest = { version = "0.12", default-features = false, features = ["native-tls", "gzip"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time"] }
+
+tauri = { version = "2", optional = true , features = [] }
+tauri-plugin-dialog = { version = "2", optional = true }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+tauri = { version = "2", features = [] }
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[features]
+desktop = ["dep:tauri", "dep:tauri-plugin-dialog"]
+
+[profile.release]
+strip = true
+lto = "thin"
+opt-level = "s"
+
+[dev-dependencies]
+tempfile = "3"
