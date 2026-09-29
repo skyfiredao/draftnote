@@ -1,6 +1,6 @@
 pub mod app;
-pub mod conflict;
 pub mod config;
+pub mod conflict;
 pub mod local;
 pub mod note;
 pub mod secret;

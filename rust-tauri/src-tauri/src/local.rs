@@ -93,22 +93,10 @@ impl Store {
         Ok(format!("{stamp}-{:02x}{:02x}", b[0], b[1]))
     }
 
-    pub fn create(
-        &self,
-        title: &str,
-        tags: Vec<String>,
-        body: &str,
-    ) -> Result<Note, StoreError> {
+    pub fn create(&self, title: &str, tags: Vec<String>, body: &str) -> Result<Note, StoreError> {
         let id = self.new_id()?;
         let now = (self.now)();
-        let n = Note::new(
-            id,
-            title.to_string(),
-            tags,
-            now,
-            now,
-            body.to_string(),
-        );
+        let n = Note::new(id, title.to_string(), tags, now, now, body.to_string());
         self.write(&n)?;
         Ok(n)
     }
@@ -362,7 +350,9 @@ mod tests {
     #[test]
     fn create_load_round_trip() {
         let (_d, s) = test_store();
-        let n = s.create("标题", vec!["医案".into()], "# 正文\n内容").unwrap();
+        let n = s
+            .create("标题", vec!["医案".into()], "# 正文\n内容")
+            .unwrap();
         assert!(!n.id.is_empty());
         let got = s.load(&n.id).unwrap();
         assert_eq!(got.body, "# 正文\n内容");

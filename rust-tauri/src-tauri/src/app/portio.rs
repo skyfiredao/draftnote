@@ -1,8 +1,8 @@
 use super::App;
+use crate::local::StoreError;
 use crate::note;
 use crate::note::NoteMeta;
 use crate::sync::EngineError;
-use crate::local::StoreError;
 use regex::Regex;
 use std::fs;
 use std::path::Path;
@@ -336,9 +336,7 @@ fn strip_markdown(s: &str) -> String {
         if is_horizontal_rule(trimmed) {
             continue;
         }
-        if is_setext_underline(trimmed)
-            && !out.is_empty()
-            && !out.last().unwrap().trim().is_empty()
+        if is_setext_underline(trimmed) && !out.is_empty() && !out.last().unwrap().trim().is_empty()
         {
             continue;
         }
@@ -487,8 +485,25 @@ fn strip_inline(line: &str) -> String {
 fn is_escapable(c: u8) -> bool {
     matches!(
         c,
-        b'\\' | b'`' | b'*' | b'_' | b'{' | b'}' | b'[' | b']' | b'(' | b')' | b'#' | b'+' | b'-'
-            | b'.' | b'!' | b'~' | b'<' | b'>' | b'|'
+        b'\\'
+            | b'`'
+            | b'*'
+            | b'_'
+            | b'{'
+            | b'}'
+            | b'['
+            | b']'
+            | b'('
+            | b')'
+            | b'#'
+            | b'+'
+            | b'-'
+            | b'.'
+            | b'!'
+            | b'~'
+            | b'<'
+            | b'>'
+            | b'|'
     )
 }
 
@@ -618,7 +633,10 @@ mod tests {
         let n = a
             .export_view(
                 dest.path().to_str().unwrap(),
-                &ExportView { kind: ExportViewKind::All, tag: String::new() },
+                &ExportView {
+                    kind: ExportViewKind::All,
+                    tag: String::new(),
+                },
                 ExportFormat::Md,
             )
             .unwrap();
@@ -638,7 +656,10 @@ mod tests {
         let n = a
             .export_view(
                 dest.path().to_str().unwrap(),
-                &ExportView { kind: ExportViewKind::Trash, tag: String::new() },
+                &ExportView {
+                    kind: ExportViewKind::Trash,
+                    tag: String::new(),
+                },
                 ExportFormat::Txt,
             )
             .unwrap();
@@ -661,7 +682,10 @@ mod tests {
         let n = a
             .export_view(
                 dest.path().to_str().unwrap(),
-                &ExportView { kind: ExportViewKind::Untagged, tag: String::new() },
+                &ExportView {
+                    kind: ExportViewKind::Untagged,
+                    tag: String::new(),
+                },
                 ExportFormat::Md,
             )
             .unwrap();
@@ -672,16 +696,22 @@ mod tests {
     #[test]
     fn export_view_tag_picks_matching_non_trashed() {
         let a = test_app();
-        a.create_note("", vec!["医案".into(), "笔记".into()], "kept 1").unwrap();
+        a.create_note("", vec!["医案".into(), "笔记".into()], "kept 1")
+            .unwrap();
         a.create_note("", vec!["医案".into()], "kept 2").unwrap();
         a.create_note("", vec!["其他".into()], "no match").unwrap();
-        let trashed = a.create_note("", vec!["医案".into()], "trashed match").unwrap();
+        let trashed = a
+            .create_note("", vec!["医案".into()], "trashed match")
+            .unwrap();
         a.set_trashed(&trashed.id, true).unwrap();
         let dest = tempfile::tempdir().unwrap();
         let n = a
             .export_view(
                 dest.path().to_str().unwrap(),
-                &ExportView { kind: ExportViewKind::Tag, tag: "医案".into() },
+                &ExportView {
+                    kind: ExportViewKind::Tag,
+                    tag: "医案".into(),
+                },
                 ExportFormat::Md,
             )
             .unwrap();
@@ -698,7 +728,10 @@ mod tests {
         let n = a
             .export_view(
                 dest.path().to_str().unwrap(),
-                &ExportView { kind: ExportViewKind::All, tag: String::new() },
+                &ExportView {
+                    kind: ExportViewKind::All,
+                    tag: String::new(),
+                },
                 ExportFormat::Md,
             )
             .unwrap();
@@ -803,7 +836,10 @@ mod tests {
 
     #[test]
     fn strip_markdown_horizontal_rule() {
-        assert_eq!(strip_markdown("before\n---\nafter\n***\nend"), "before\nafter\nend");
+        assert_eq!(
+            strip_markdown("before\n---\nafter\n***\nend"),
+            "before\nafter\nend"
+        );
     }
 
     #[test]
@@ -824,7 +860,10 @@ mod tests {
 
     #[test]
     fn strip_markdown_html_tags() {
-        assert_eq!(strip_markdown("<b>keep text</b> and <br/> line"), "keep text and  line");
+        assert_eq!(
+            strip_markdown("<b>keep text</b> and <br/> line"),
+            "keep text and  line"
+        );
     }
 
     #[test]
@@ -835,7 +874,10 @@ mod tests {
         let dest_md = tempfile::tempdir().unwrap();
         a.export_view(
             dest_md.path().to_str().unwrap(),
-            &ExportView { kind: ExportViewKind::All, tag: String::new() },
+            &ExportView {
+                kind: ExportViewKind::All,
+                tag: String::new(),
+            },
             ExportFormat::Md,
         )
         .unwrap();
@@ -846,7 +888,10 @@ mod tests {
         let dest_txt = tempfile::tempdir().unwrap();
         a.export_view(
             dest_txt.path().to_str().unwrap(),
-            &ExportView { kind: ExportViewKind::All, tag: String::new() },
+            &ExportView {
+                kind: ExportViewKind::All,
+                tag: String::new(),
+            },
             ExportFormat::Txt,
         )
         .unwrap();
@@ -861,7 +906,9 @@ mod tests {
         let src = tempfile::tempdir().unwrap();
         let path = src.path().join("a.md");
         fs::write(&path, "# Alpha\nbody").unwrap();
-        let ids = a.import_files(vec![path.to_string_lossy().to_string()]).unwrap();
+        let ids = a
+            .import_files(vec![path.to_string_lossy().to_string()])
+            .unwrap();
         let n = a.load_note(&ids[0]).unwrap();
         assert_eq!(n.title, "Alpha");
     }

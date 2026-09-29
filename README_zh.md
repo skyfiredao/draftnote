@@ -173,6 +173,8 @@ cd draftnote/rust-tauri/src-tauri && cargo test
 cd draftnote/backend && go test ./...
 ```
 
+正文加密：在 Sync Settings 中输入 6 位 PIN，可加密存放在 Git 远端的笔记正文；留空则关闭加密。本地笔记仍以明文保存。切换加密状态或更换 PIN 时，会全量重写远端笔记。PIN 连续验证失败三次后锁定 5 分钟，重启应用后仍然有效。加密仅覆盖正文，标题、tag、时间戳和文件类型仍可在仓库中查看。6 位 PIN 用于避免正文被直接目视阅读，不用于抵御离线猜测。
+
 CI 配置：[.github/workflows/draftnote_build.yml](../.github/workflows/draftnote_build.yml)。
 
 ## 许可证

@@ -1,5 +1,6 @@
 use aes_gcm::aead::{Aead, KeyInit, OsRng};
 use aes_gcm::{AeadCore, Aes256Gcm, Key, Nonce};
+use aes_gcm_siv::{Aes256GcmSiv, Key as SivKey, Nonce as SivNonce};
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
 
@@ -69,9 +70,80 @@ pub fn open_with(key: &[u8; 32], blob: &str) -> Result<String, SecretError> {
     String::from_utf8(pt).map_err(|_| SecretError::Crypto)
 }
 
+pub fn seal_segment(key: &[u8; 32], note_id: &str, plaintext: &str) -> Result<String, SecretError> {
+    use sha2::{Digest, Sha256};
+
+    let digest =
+        Sha256::digest([b"draftnote-segment-v1\0".as_slice(), note_id.as_bytes()].concat());
+    let nonce = SivNonce::from_slice(&digest[..12]);
+    let aad = segment_aad(note_id);
+    let cipher = Aes256GcmSiv::new(SivKey::<Aes256GcmSiv>::from_slice(key));
+    let ciphertext = cipher
+        .encrypt(
+            nonce,
+            aes_gcm_siv::aead::Payload {
+                msg: plaintext.as_bytes(),
+                aad: &aad,
+            },
+        )
+        .map_err(|_| SecretError::Crypto)?;
+    Ok(B64.encode(ciphertext))
+}
+
+pub fn open_segment(key: &[u8; 32], note_id: &str, blob: &str) -> Result<String, SecretError> {
+    use sha2::{Digest, Sha256};
+
+    let ciphertext = B64.decode(blob).map_err(|_| SecretError::Base64)?;
+    if ciphertext.len() < 16 {
+        return Err(SecretError::TooShort);
+    }
+    let digest =
+        Sha256::digest([b"draftnote-segment-v1\0".as_slice(), note_id.as_bytes()].concat());
+    let nonce = SivNonce::from_slice(&digest[..12]);
+    let aad = segment_aad(note_id);
+    let cipher = Aes256GcmSiv::new(SivKey::<Aes256GcmSiv>::from_slice(key));
+    let plaintext = cipher
+        .decrypt(
+            nonce,
+            aes_gcm_siv::aead::Payload {
+                msg: &ciphertext,
+                aad: &aad,
+            },
+        )
+        .map_err(|_| SecretError::Crypto)?;
+    String::from_utf8(plaintext).map_err(|_| SecretError::Crypto)
+}
+
+fn segment_aad(note_id: &str) -> Vec<u8> {
+    let mut aad = Vec::with_capacity(note_id.len() + 24);
+    aad.extend_from_slice(b"draftnote-note-segment-v1\0");
+    aad.extend_from_slice(&(note_id.len() as u64).to_be_bytes());
+    aad.extend_from_slice(note_id.as_bytes());
+    aad
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deterministic_segment_encryption_is_stable_and_authenticated() {
+        let key: [u8; 32] = Aes256Gcm::generate_key(&mut OsRng).into();
+        let first = seal_segment(&key, "note-a", "same paragraph").unwrap();
+        let repeated = seal_segment(&key, "note-a", "same paragraph").unwrap();
+        let other_note = seal_segment(&key, "note-b", "same paragraph").unwrap();
+
+        assert_eq!(first, repeated);
+        assert_ne!(first, other_note);
+        assert_eq!(
+            open_segment(&key, "note-a", &first).unwrap(),
+            "same paragraph"
+        );
+        assert!(open_segment(&key, "note-a", &other_note).is_err());
+        let mut tampered = B64.decode(&first).unwrap();
+        tampered[0] ^= 1;
+        assert!(open_segment(&key, "note-a", &B64.encode(tampered)).is_err());
+    }
 
     fn from_hex(s: &str) -> Vec<u8> {
         (0..s.len())
@@ -135,7 +207,10 @@ mod tests {
         let mut raw = vec![0x02u8];
         raw.extend_from_slice(&[0u8; NONCE_SIZE + 16 + 1]);
         let blob = B64.encode(raw);
-        assert_eq!(open_with(&test_key(), &blob), Err(SecretError::UnsupportedVersion));
+        assert_eq!(
+            open_with(&test_key(), &blob),
+            Err(SecretError::UnsupportedVersion)
+        );
     }
 
     #[test]
@@ -146,6 +221,9 @@ mod tests {
 
     #[test]
     fn open_rejects_bad_base64() {
-        assert_eq!(open_with(&test_key(), "!!!not-base64!!!"), Err(SecretError::Base64));
+        assert_eq!(
+            open_with(&test_key(), "!!!not-base64!!!"),
+            Err(SecretError::Base64)
+        );
     }
 }

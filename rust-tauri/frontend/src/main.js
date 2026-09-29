@@ -87,10 +87,26 @@ function initMermaid() {
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import {
+  SAVED_PIN_MASK,
+  configureArguments,
+  canSaveSettings,
+  decryptionErrorMessage,
+  encryptionPinFingerprint,
+  encryptionPinSubmission,
+  isEncryptionPinValid,
+  runSettingsValidation,
+  settingsActions,
+  settingsMayClose,
+  settingsStageAfterValidation,
+  shouldKeepSavedPin,
+} from "./settings-pin.js";
 
 const go = {
   GetConfig: () => invoke("get_config"),
-  Configure: (repoUrl, serverUrl, username, token, useApi, syncIntervalSeconds, keepToken) =>
+  BeginSettingsValidation: () => invoke("begin_settings_validation"),
+  SettingsClosed: () => invoke("settings_closed"),
+  Configure: (repoUrl, serverUrl, username, token, useApi, syncIntervalSeconds, keepToken, encryptionPin) =>
     invoke("configure", {
       repoUrl,
       serverUrl,
@@ -99,6 +115,7 @@ const go = {
       useApi,
       syncIntervalSeconds,
       keepToken,
+      encryptionPin,
     }),
   ListNotes: () => invoke("list_notes"),
   AllTags: () => invoke("all_tags"),
@@ -120,10 +137,6 @@ const go = {
   RevisionBody: (id, sha) => invoke("revision_body", { id, sha }),
   RestoreRevision: (id, sha) => invoke("restore_revision", { id, sha }),
   ValidateSync: () => invoke("validate_sync"),
-  CheckRemoteMismatch: () => invoke("check_remote_mismatch"),
-  RecloneServer: () => invoke("reclone_server"),
-  AcknowledgeRemoteMismatch: (serverUrl) =>
-    invoke("acknowledge_remote_mismatch", { serverUrl }),
   ImportFromDir: () => invoke("import_from_dir"),
   ImportFromFiles: () => invoke("import_from_files"),
   ExportView: (view, format) => invoke("export_view", { view, format }),
@@ -792,6 +805,23 @@ function initTheme() {
 }
 
 let validatedFingerprint = null;
+let settingsStage = "editing";
+
+const settingFieldIds = ["cfg-repourl", "cfg-server-url", "cfg-username", "cfg-token", "cfg-useapi", "cfg-interval", "cfg-encryption-pin"];
+
+function updateSettingsActions() {
+  const actions = settingsActions(settingsStage);
+  const validate = document.getElementById("cfg-validate");
+  const cancel = document.getElementById("cfg-cancel");
+  const save = document.getElementById("cfg-save");
+  validate.disabled = !actions.validate;
+  cancel.disabled = !actions.cancel;
+  save.disabled = !actions.save || !canSaveSettings(validatedFingerprint, currentSettingsFingerprint());
+  validate.classList.toggle("hidden", !actions.validate);
+  cancel.classList.toggle("hidden", !actions.cancel);
+  save.classList.toggle("hidden", !actions.save);
+  for (const id of settingFieldIds) document.getElementById(id).disabled = !actions.editable;
+}
 
 function currentSettingsFingerprint() {
   const tokenInput = document.getElementById("cfg-token");
@@ -802,24 +832,42 @@ function currentSettingsFingerprint() {
     document.getElementById("cfg-username").value.trim(),
     tokenPart,
     document.getElementById("cfg-useapi").checked ? "1" : "0",
+    document.getElementById("cfg-interval").value,
+    encryptionPinFingerprint(
+      document.getElementById("cfg-encryption-pin").value,
+      shouldKeepSavedPin(
+        document.getElementById("cfg-encryption-pin").value,
+        document.getElementById("cfg-encryption-pin").dataset.keepSavedPin === "1",
+      ),
+    ),
   ].join("|");
 }
 
 function updateSaveButtonState() {
-  const saveBtn = document.getElementById("cfg-save");
-  const tokenInput = document.getElementById("cfg-token");
-  const tokenEmpty = tokenInput.value.trim() === "";
-  if (tokenEmpty) {
-    saveBtn.disabled = false;
-    return;
-  }
-  saveBtn.disabled = validatedFingerprint !== currentSettingsFingerprint();
+  updateSettingsActions();
 }
 
 async function openSettings() {
   if (!go) return;
+  const modal = document.getElementById("settings-modal");
+  if (!modal.classList.contains("hidden")) return;
+  modal.classList.remove("hidden");
+  settingsStage = "validating";
+  updateSettingsActions();
   resetValidateMsg();
-  const cfg = (await go.GetConfig()) || {};
+  let cfg;
+  try {
+    await go.BeginSettingsValidation();
+    await flushPending();
+    cfg = (await go.GetConfig()) || {};
+  } catch (error) {
+    try {
+      await go.SettingsClosed();
+    } finally {
+      modal.classList.add("hidden");
+    }
+    throw error;
+  }
   document.getElementById("cfg-repourl").value = cfg.repo_url || "";
   document.getElementById("cfg-server-url").value = cfg.server_url || "";
   document.getElementById("cfg-username").value = cfg.username || "";
@@ -834,17 +882,47 @@ async function openSettings() {
   }
   tokenInput.oninput = () => {
     tokenInput.dataset.pristine = "0";
+    validatedFingerprint = null;
     updateSaveButtonState();
   };
   document.getElementById("cfg-interval").value = cfg.sync_interval_seconds || 10;
+  const pinInput = document.getElementById("cfg-encryption-pin");
+  pinInput.value = cfg.encryption_enabled ? SAVED_PIN_MASK : "";
+  pinInput.dataset.keepSavedPin = cfg.encryption_enabled ? "1" : "0";
+  pinInput.onfocus = () => {
+    if (pinInput.dataset.keepSavedPin === "1") pinInput.select();
+  };
+  pinInput.oninput = () => {
+    pinInput.dataset.keepSavedPin = pinInput.value === SAVED_PIN_MASK ? "1" : "0";
+    validatedFingerprint = null;
+    updateSaveButtonState();
+  };
+  pinInput.placeholder = "6 digits to encrypt; blank for plaintext";
+  ["cfg-repourl", "cfg-server-url", "cfg-username", "cfg-useapi", "cfg-interval", "cfg-encryption-pin"].forEach((id) => {
+    const field = document.getElementById(id);
+    field.oninput = field.onchange = () => {
+      validatedFingerprint = null;
+      updateSaveButtonState();
+    };
+  });
+  document.getElementById("cfg-pin-lock-msg").textContent =
+    cfg.encryption_locked_until > Math.floor(Date.now() / 1000)
+      ? `PIN verification locked for ${cfg.encryption_locked_until - Math.floor(Date.now() / 1000)} seconds`
+      : "";
   validatedFingerprint = null;
+  settingsStage = "editing";
   updateSaveButtonState();
-  document.getElementById("settings-modal").classList.remove("hidden");
 }
 
-function closeSettings() {
-  document.getElementById("settings-modal").classList.add("hidden");
-  resetValidateMsg();
+async function closeSettings(saved = false) {
+  if (document.getElementById("settings-modal").classList.contains("hidden")) return;
+  if (!settingsMayClose(settingsStage, saved)) return;
+  try {
+    await go.SettingsClosed();
+  } finally {
+    document.getElementById("settings-modal").classList.add("hidden");
+    resetValidateMsg();
+  }
 }
 
 function resetValidateMsg() {
@@ -861,6 +939,10 @@ function showValidateMsg(text, kind) {
   if (kind) msg.classList.add(kind);
 }
 
+function emitSettingsSave() {
+  void closeSettings(true);
+}
+
 function readSettingsForm() {
   const tokenInput = document.getElementById("cfg-token");
   const keepToken = tokenInput.dataset.pristine === "1";
@@ -872,100 +954,63 @@ function readSettingsForm() {
     keepToken,
     token: keepToken ? "" : tokenInput.value.trim(),
     interval: parseInt(document.getElementById("cfg-interval").value, 10) || 10,
+    encryptionPin: encryptionPinSubmission(
+      document.getElementById("cfg-encryption-pin").value,
+      shouldKeepSavedPin(
+        document.getElementById("cfg-encryption-pin").value,
+        document.getElementById("cfg-encryption-pin").dataset.keepSavedPin === "1",
+      ),
+    ),
   };
 }
 
 async function validateSettings() {
-  if (!go) return;
-  const btn = document.getElementById("cfg-validate");
-  btn.disabled = true;
+  if (!go || settingsStage !== "editing") return;
+  const pinInput = document.getElementById("cfg-encryption-pin");
+  const keepSavedPin = shouldKeepSavedPin(
+    pinInput.value,
+    pinInput.dataset.keepSavedPin === "1",
+  );
+  if (!isEncryptionPinValid(pinInput.value, keepSavedPin)) {
+    showValidateMsg("PIN must be empty or exactly 6 digits", "err");
+    return;
+  }
+  settingsStage = "validating";
+  updateSettingsActions();
+  validatedFingerprint = null;
   showValidateMsg("Validating…", "");
   try {
     const f = readSettingsForm();
-    await go.Configure(f.repoURL, f.serverURL, f.username, f.token, f.useAPI, f.interval, f.keepToken);
-    await flushPending();
-    const result = await go.ValidateSync();
+    const validatedForm = currentSettingsFingerprint();
+    const result = await runSettingsValidation({
+      unlock: go.SettingsClosed,
+      configure: () => go.Configure(...configureArguments(f)),
+      validate: go.ValidateSync,
+    });
+    validatedFingerprint = null;
+    if (validatedForm !== currentSettingsFingerprint()) {
+      throw new Error("Settings changed during validation; validate again");
+    }
+    validatedFingerprint = validatedForm;
+    settingsStage = settingsStageAfterValidation(true);
     showValidateMsg(result || "OK", "ok");
-    validatedFingerprint = currentSettingsFingerprint();
     updateSaveButtonState();
-    await loadAll();
-    if (currentID) {
-      const id = currentID;
-      currentID = null;
-      await openNote(id);
-    }
-    const mm = await go.CheckRemoteMismatch();
-    if (mm && mm.mismatch) {
-      promptRemoteMismatch(mm.server_url);
-    }
+    void loadAll().catch((error) => console.error(error));
   } catch (e) {
+    if (settingsStage !== "validated") {
+      settingsStage = settingsStageAfterValidation(false);
+      validatedFingerprint = null;
+    }
+    updateSaveButtonState();
     showValidateMsg(String(e && e.message ? e.message : e), "err");
   } finally {
-    btn.disabled = false;
+    updateSettingsActions();
   }
-}
-
-async function promptRemoteMismatch(serverURL) {
-  const msg = document.getElementById("cfg-validate-msg");
-  msg.classList.remove("hidden", "ok", "err");
-  msg.classList.add("err");
-  msg.innerHTML = "";
-
-  const line = document.createElement("div");
-  line.textContent =
-    "Server currently clones " +
-    serverURL +
-    " — your Repo URL points somewhere else. Keep the server as-is or reclone from your Repo URL?";
-  msg.appendChild(line);
-
-  const actions = document.createElement("div");
-  actions.style.marginTop = "8px";
-  actions.style.display = "flex";
-  actions.style.gap = "8px";
-
-  const keep = document.createElement("button");
-  keep.className = "btn-plain";
-  keep.textContent = "Keep server";
-  keep.addEventListener("click", async () => {
-    try {
-      await go.AcknowledgeRemoteMismatch(serverURL);
-      showValidateMsg("Kept server pointing at " + serverURL, "ok");
-    } catch (e) {
-      showValidateMsg(String(e && e.message ? e.message : e), "err");
-    }
-  });
-
-  const reclone = document.createElement("button");
-  reclone.className = "btn-primary";
-  reclone.textContent = "Reclone from Repo URL";
-  reclone.addEventListener("click", async () => {
-    keep.disabled = true;
-    reclone.disabled = true;
-    showValidateMsg("Recloning…", "");
-    try {
-      await go.RecloneServer();
-      showValidateMsg("Server recloned from Repo URL", "ok");
-    } catch (e) {
-      showValidateMsg(String(e && e.message ? e.message : e), "err");
-    }
-  });
-
-  actions.appendChild(keep);
-  actions.appendChild(reclone);
-  msg.appendChild(actions);
 }
 
 async function saveSettings() {
-  if (!go) return closeSettings();
-  const saveBtn = document.getElementById("cfg-save");
-  if (saveBtn.disabled) return;
-  const f = readSettingsForm();
-  try {
-    await go.Configure(f.repoURL, f.serverURL, f.username, f.token, f.useAPI, f.interval, f.keepToken);
-  } catch (e) {
-    alert("Save failed: " + (e && e.message ? e.message : e));
-  }
-  closeSettings();
+  if (!go || settingsStage !== "validated" || !validatedFingerprint || validatedFingerprint !== currentSettingsFingerprint()) return;
+  emitSettingsSave();
 }
 
 function getFontSize() {
@@ -1511,12 +1556,23 @@ function navigateNav(delta) {
 }
 
 document.getElementById("cfg-save").addEventListener("click", saveSettings);
-document.getElementById("cfg-cancel").addEventListener("click", closeSettings);
+document.getElementById("cfg-cancel").addEventListener("click", () => closeSettings());
 document.getElementById("cfg-validate").addEventListener("click", validateSettings);
-["cfg-repourl", "cfg-server-url", "cfg-username", "cfg-useapi"].forEach((id) => {
+[
+  "cfg-repourl",
+  "cfg-server-url",
+  "cfg-username",
+  "cfg-useapi",
+  "cfg-interval",
+  "cfg-encryption-pin",
+].forEach((id) => {
   const el = document.getElementById(id);
   el.addEventListener("input", updateSaveButtonState);
   el.addEventListener("change", updateSaveButtonState);
+});
+document.getElementById("cfg-token").addEventListener("input", () => {
+  validatedFingerprint = null;
+  updateSaveButtonState();
 });
 document.getElementById("settings-modal").addEventListener("click", (e) => {
   if (e.target.id === "settings-modal") closeSettings();
@@ -1550,6 +1606,14 @@ if (go) {
     if (document.getElementById("settings-modal").classList.contains("hidden")) {
       loadAll();
     }
+  });
+  listen("sync-error", (event) => {
+    const error = String(event.payload?.message || event.payload || "");
+    if (!error) return;
+    const message = decryptionErrorMessage(error);
+    const banner = document.getElementById("sync-error-msg");
+    banner.textContent = message;
+    banner.classList.remove("hidden");
   });
   listen("note-body-changed", async (event) => {
     const id = event.payload;

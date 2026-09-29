@@ -113,9 +113,15 @@ pub struct Note {
     pub title: String,
     #[serde(default, deserialize_with = "null_to_empty_vec")]
     pub tags: Vec<String>,
-    #[serde(serialize_with = "go_time::serialize", deserialize_with = "go_time::deserialize")]
+    #[serde(
+        serialize_with = "go_time::serialize",
+        deserialize_with = "go_time::deserialize"
+    )]
     pub created: DateTime<Utc>,
-    #[serde(serialize_with = "go_time::serialize", deserialize_with = "go_time::deserialize")]
+    #[serde(
+        serialize_with = "go_time::serialize",
+        deserialize_with = "go_time::deserialize"
+    )]
     pub updated: DateTime<Utc>,
     pub body: String,
     #[serde(default, skip_serializing_if = "is_false")]
@@ -139,9 +145,15 @@ pub struct NoteMeta {
     pub title: String,
     #[serde(default, deserialize_with = "null_to_empty_vec")]
     pub tags: Vec<String>,
-    #[serde(serialize_with = "go_time::serialize", deserialize_with = "go_time::deserialize")]
+    #[serde(
+        serialize_with = "go_time::serialize",
+        deserialize_with = "go_time::deserialize"
+    )]
     pub created: DateTime<Utc>,
-    #[serde(serialize_with = "go_time::serialize", deserialize_with = "go_time::deserialize")]
+    #[serde(
+        serialize_with = "go_time::serialize",
+        deserialize_with = "go_time::deserialize"
+    )]
     pub updated: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub pinned: bool,
@@ -164,6 +176,138 @@ pub struct NoteMeta {
 
 pub fn decode(b: &[u8]) -> Result<Note, serde_json::Error> {
     serde_json::from_slice(b)
+}
+
+pub fn encode_remote(n: &Note, key: Option<&[u8; 32]>) -> Result<Vec<u8>, String> {
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&n.encode().map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+    let normalized_body = normalize_line_endings(&n.body);
+    let segments = body_segments(&normalized_body);
+    if let Some(key) = key {
+        let encrypted = encrypt_body_segments(&n.id, &n.body, key)?;
+        value["body"] = serde_json::Value::Array(
+            encrypted
+                .segments
+                .into_iter()
+                .map(serde_json::Value::String)
+                .collect(),
+        );
+        value["body_encryption_version"] = serde_json::Value::from(encrypted.version);
+        value["body_key_check"] = serde_json::Value::String(encrypted.check);
+    } else {
+        value["body"] = serde_json::Value::Array(
+            segments
+                .into_iter()
+                .map(|s| serde_json::Value::String(s.to_string()))
+                .collect(),
+        );
+    }
+    serde_json::to_vec_pretty(&value).map_err(|e| e.to_string())
+}
+
+pub fn decode_remote(b: &[u8], key: Option<&[u8; 32]>) -> Result<Note, String> {
+    let mut value: serde_json::Value = serde_json::from_slice(b).map_err(|e| e.to_string())?;
+    if let Some(version) = value.get("body_encryption_version") {
+        let key = key.ok_or_else(|| "note is encrypted but no PIN is configured".to_string())?;
+        if version.as_u64() != Some(1) {
+            return Err("unsupported encrypted note version".to_string());
+        }
+        let id = value["id"]
+            .as_str()
+            .ok_or_else(|| "encrypted note has no id".to_string())?;
+        let check_blob = value["body_key_check"]
+            .as_str()
+            .ok_or_else(|| "encrypted note has no key check".to_string())?;
+        let check = crate::secret::open_segment(key, id, check_blob)
+            .map_err(|_| "incorrect PIN".to_string())?;
+        if check != "draftnote-key-check-v1" {
+            return Err("incorrect PIN".to_string());
+        }
+        let segments = value["body"]
+            .as_array()
+            .ok_or_else(|| "encrypted note body is not an array".to_string())?;
+        let mut body = String::new();
+        for segment in segments {
+            let blob = segment
+                .as_str()
+                .ok_or_else(|| "invalid encrypted segment".to_string())?;
+            body.push_str(
+                &crate::secret::open_segment(key, id, blob)
+                    .map_err(|_| "incorrect PIN".to_string())?,
+            );
+        }
+        value["body"] = serde_json::Value::String(body);
+        if let Some(object) = value.as_object_mut() {
+            object.remove("body_encryption_version");
+            object.remove("body_key_check");
+        }
+    } else if let Some(segments) = value.get("body").and_then(serde_json::Value::as_array) {
+        if key.is_some() {
+            return Err("remote note is not encrypted".to_string());
+        }
+        let mut body = String::new();
+        for segment in segments {
+            body.push_str(
+                segment
+                    .as_str()
+                    .ok_or_else(|| "invalid plaintext segment".to_string())?,
+            );
+        }
+        value["body"] = serde_json::Value::String(body);
+    } else if key.is_some() {
+        return Err("remote note is not encrypted".to_string());
+    }
+    serde_json::from_value(value).map_err(|e| e.to_string())
+}
+
+#[derive(Serialize, Deserialize)]
+struct EncryptedBody {
+    version: u8,
+    check: String,
+    segments: Vec<String>,
+}
+
+fn encrypt_body_segments(id: &str, body: &str, key: &[u8; 32]) -> Result<EncryptedBody, String> {
+    let segments = body_segments(body)
+        .into_iter()
+        .map(|s| crate::secret::seal_segment(key, id, s))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    let wire = EncryptedBody {
+        version: 1,
+        check: crate::secret::seal_segment(key, id, "draftnote-key-check-v1")
+            .map_err(|e| e.to_string())?,
+        segments,
+    };
+    Ok(wire)
+}
+
+fn body_segments(body: &str) -> Vec<&str> {
+    if body.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut start = 0;
+    let mut line_start = 0;
+    let bytes = body.as_bytes();
+    while line_start < bytes.len() {
+        let line_end = body[line_start..]
+            .find('\n')
+            .map(|n| line_start + n + 1)
+            .unwrap_or(bytes.len());
+        let line = &body[line_start..line_end];
+        let content = line.strip_suffix('\n').unwrap_or(line);
+        if content.trim().is_empty() && line_end < bytes.len() {
+            out.push(&body[start..line_end]);
+            start = line_end;
+        }
+        line_start = line_end;
+    }
+    if start < body.len() {
+        out.push(&body[start..]);
+    }
+    out
 }
 
 fn normalize_line_endings(s: &str) -> String {
@@ -302,6 +446,8 @@ pub fn all_meta_tags(metas: &[NoteMeta]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aes_gcm::aead::OsRng;
+    use aes_gcm::{Aes256Gcm, KeyInit};
     use chrono::{TimeZone, Timelike};
 
     fn sample(id: &str, title: &str, tags: &[&str]) -> Note {
@@ -330,6 +476,45 @@ mod tests {
         assert_eq!(out.tags, vec!["医案".to_string(), "少阳病".to_string()]);
         assert_eq!(out.created, input.created);
         assert_eq!(out.updated, input.updated);
+    }
+
+    #[test]
+    fn plaintext_remote_body_is_stored_as_paragraph_records() {
+        let mut input = sample("n1", "title", &[]);
+        input.body = "first paragraph\n\nsecond paragraph\n".to_string();
+
+        let wire = encode_remote(&input, None).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&wire).unwrap();
+
+        assert_eq!(
+            value["body"],
+            serde_json::json!(["first paragraph\n\n", "second paragraph\n"])
+        );
+        assert_eq!(decode_remote(&wire, None).unwrap().body, input.body);
+    }
+
+    #[test]
+    fn encrypted_remote_round_trip_preserves_body_and_segment_ciphertext() {
+        let mut input = sample("n1", "title", &[]);
+        input.body = "first paragraph\n\nsecond paragraph\n".to_string();
+        let key: [u8; 32] = Aes256Gcm::generate_key(&mut OsRng).into();
+        let first = encode_remote(&input, Some(&key)).unwrap();
+        let decoded = decode_remote(&first, Some(&key)).unwrap();
+        assert_eq!(decoded.body, input.body);
+
+        let mut changed = input.clone();
+        changed.body = "first paragraph\n\nchanged paragraph\n".to_string();
+        let second = encode_remote(&changed, Some(&key)).unwrap();
+        let first_wire: serde_json::Value = serde_json::from_slice(&first).unwrap();
+        let second_wire: serde_json::Value = serde_json::from_slice(&second).unwrap();
+        let first_segments = first_wire["body"].as_array().unwrap();
+        let second_segments = second_wire["body"].as_array().unwrap();
+        assert_eq!(first_segments[0], second_segments[0]);
+        assert_ne!(first_segments[1], second_segments[1]);
+        assert!(decode_remote(&first, None).is_err());
+        let wrong_key: [u8; 32] = Aes256Gcm::generate_key(&mut OsRng).into();
+        assert_ne!(key, wrong_key);
+        assert!(decode_remote(&first, Some(&wrong_key)).is_err());
     }
 
     #[test]
@@ -433,7 +618,10 @@ mod tests {
 
     #[test]
     fn encode_escapes_html_like_go() {
-        let n = note_at(Utc.with_ymd_and_hms(2026, 9, 1, 0, 0, 0).unwrap(), "a > b < c & d");
+        let n = note_at(
+            Utc.with_ymd_and_hms(2026, 9, 1, 0, 0, 0).unwrap(),
+            "a > b < c & d",
+        );
         let s = String::from_utf8(n.encode().unwrap()).unwrap();
         assert!(s.contains("\\u003e"), "> must escape: {s}");
         assert!(s.contains("\\u003c"), "< must escape");
@@ -485,4 +673,3 @@ mod tests {
         assert_eq!(out.created, n.created);
     }
 }
-

@@ -173,6 +173,8 @@ cd draftnote/rust-tauri/src-tauri && cargo test
 cd draftnote/backend && go test ./...
 ```
 
+Note encryption: in Sync Settings, enter a six-digit PIN to encrypt note bodies on the Git remote; leave it empty to disable encryption. Local note files remain plaintext. Changing the encryption mode or PIN rewrites all remote notes. Three failed PIN checks lock verification for five minutes, including across application restarts. Encryption covers note bodies only; titles, tags, timestamps, and file types remain visible in the repository. The six-digit PIN is intended to obscure content from casual viewing, not to resist offline guessing.
+
 CI configuration: [.github/workflows/draftnote_build.yml](../.github/workflows/draftnote_build.yml).
 
 ## License

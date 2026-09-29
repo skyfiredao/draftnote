@@ -22,6 +22,10 @@ pub struct Config {
     pub token: String,
     #[serde(default, skip_serializing_if = "is_empty_string")]
     pub token_secret: String,
+    #[serde(skip)]
+    pub encryption_pin: String,
+    #[serde(skip)]
+    pub encryption_transition_pin: String,
     #[serde(default)]
     pub use_api: bool,
     #[serde(default)]
@@ -34,6 +38,16 @@ pub struct Config {
     pub sync_interval_seconds: i64,
     #[serde(default, skip_serializing_if = "is_empty_string")]
     pub mismatch_ack_server_url: String,
+    #[serde(default, skip_serializing_if = "is_empty_string")]
+    pub encryption_pin_secret: String,
+    #[serde(default)]
+    pub encryption_failures: u8,
+    #[serde(default)]
+    pub encryption_locked_until: i64,
+    #[serde(default)]
+    pub encryption_transition: bool,
+    #[serde(default, skip_serializing_if = "is_empty_string")]
+    pub encryption_transition_pin_secret: String,
 }
 
 impl Config {
@@ -54,6 +68,10 @@ pub struct PublicConfig {
     pub use_api: bool,
     pub has_token: bool,
     pub sync_interval_seconds: i64,
+    pub encryption_enabled: bool,
+    pub encryption_transition: bool,
+    pub encryption_locked_until: i64,
+    pub encryption_failures: u8,
 }
 
 impl Config {
@@ -65,9 +83,15 @@ impl Config {
             use_api: self.use_api,
             has_token: !self.token.is_empty(),
             sync_interval_seconds: self.sync_interval_seconds,
+            encryption_enabled: !self.encryption_pin.is_empty(),
+            encryption_transition: self.encryption_transition,
+            encryption_locked_until: self.encryption_locked_until,
+            encryption_failures: self.encryption_failures,
         }
     }
 }
+
+impl Config {}
 
 pub fn config_path(root: &Path) -> PathBuf {
     root.join("config.json")
@@ -93,6 +117,21 @@ pub fn load_config(root: &Path) -> Config {
             c.token = tok;
         }
     }
+    if !c.encryption_pin_secret.is_empty() {
+        if let Ok(pin) =
+            secret::open_with(&key_from_username(&c.username), &c.encryption_pin_secret)
+        {
+            c.encryption_pin = pin;
+        }
+    }
+    if !c.encryption_transition_pin_secret.is_empty() {
+        if let Ok(pin) = secret::open_with(
+            &key_from_username(&c.username),
+            &c.encryption_transition_pin_secret,
+        ) {
+            c.encryption_transition_pin = pin;
+        }
+    }
     c
 }
 
@@ -105,9 +144,165 @@ pub fn save_config(root: &Path, cfg: &Config) -> std::io::Result<()> {
     let mut c = cfg.clone();
     c.token_secret = secret::seal_with(&key_from_username(&cfg.username), &cfg.token)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    c.encryption_pin_secret =
+        secret::seal_with(&key_from_username(&cfg.username), &cfg.encryption_pin)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    c.encryption_transition_pin_secret = secret::seal_with(
+        &key_from_username(&cfg.username),
+        &cfg.encryption_transition_pin,
+    )
+    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     let b = serde_json::to_vec_pretty(&c)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     write_private(&config_path(root), &b)
+}
+
+pub fn valid_encryption_pin(pin: &str) -> bool {
+    pin.is_empty() || (pin.len() == 6 && pin.bytes().all(|b| b.is_ascii_digit()))
+}
+
+pub fn resolve_encryption_pin(current: &str, submitted: &str, keep_current: bool) -> String {
+    if keep_current {
+        current.to_string()
+    } else {
+        submitted.to_string()
+    }
+}
+
+pub fn encryption_key(pin: &str) -> [u8; 32] {
+    Sha256::digest(pin.as_bytes()).into()
+}
+
+pub fn check_encryption_pin(root: &Path, candidate: &str) -> Result<bool, String> {
+    let cfg = load_config(root);
+    check_pin_against(root, candidate, &cfg.encryption_pin, false, true)
+}
+
+pub fn check_transition_pin(root: &Path, candidate: &str) -> Result<bool, String> {
+    let cfg = load_config(root);
+    if !cfg.encryption_transition {
+        return Err("No encryption transition is in progress".to_string());
+    }
+    check_pin_against(root, candidate, &cfg.encryption_transition_pin, true, true)
+}
+
+pub fn verify_transition_candidate(root: &Path, candidate: &str) -> Result<bool, String> {
+    let cfg = load_config(root);
+    if !cfg.encryption_transition {
+        return Err("No encryption transition is in progress".to_string());
+    }
+    check_pin_against(
+        root,
+        candidate,
+        &cfg.encryption_transition_pin,
+        false,
+        false,
+    )
+}
+
+pub fn check_candidate_against_pin(
+    root: &Path,
+    candidate: &str,
+    expected: &str,
+) -> Result<bool, String> {
+    check_pin_against(root, candidate, expected, false, true)
+}
+
+fn check_pin_against(
+    root: &Path,
+    candidate: &str,
+    expected: &str,
+    transition: bool,
+    persist: bool,
+) -> Result<bool, String> {
+    if !valid_encryption_pin(candidate) || candidate.is_empty() {
+        return Err("PIN must be empty or exactly 6 digits".to_string());
+    }
+    let mut cfg = load_config(root);
+    let now = chrono::Utc::now().timestamp();
+    if cfg.encryption_locked_until > now {
+        return Err(format!(
+            "PIN verification locked until {}",
+            cfg.encryption_locked_until
+        ));
+    }
+    let correct = !expected.is_empty() && candidate == expected;
+    if persist {
+        update_pin_attempt(&mut cfg, correct, transition, candidate, now);
+        save_config(root, &cfg).map_err(|e| e.to_string())?;
+    }
+    Ok(correct)
+}
+
+fn update_pin_attempt(
+    cfg: &mut Config,
+    correct: bool,
+    transition: bool,
+    candidate: &str,
+    now: i64,
+) {
+    if correct {
+        if transition {
+            cfg.encryption_transition_pin = candidate.to_string();
+            cfg.encryption_failures = 0;
+            cfg.encryption_locked_until = 0;
+            cfg.encryption_transition = true;
+        } else {
+            cfg.encryption_failures = 0;
+            cfg.encryption_locked_until = 0;
+        }
+    } else {
+        cfg.encryption_failures = cfg.encryption_failures.saturating_add(1);
+        if cfg.encryption_failures >= 3 {
+            cfg.encryption_failures = 0;
+            cfg.encryption_locked_until = now + 300;
+        }
+    }
+}
+
+pub fn record_candidate_failure(root: &Path) -> Result<u8, String> {
+    let mut cfg = load_config(root);
+    let now = chrono::Utc::now().timestamp();
+    if cfg.encryption_locked_until > now {
+        return Err(format!(
+            "PIN verification locked until {}",
+            cfg.encryption_locked_until
+        ));
+    }
+    cfg.encryption_failures = cfg.encryption_failures.saturating_add(1);
+    if cfg.encryption_failures >= 3 {
+        cfg.encryption_failures = 0;
+        cfg.encryption_locked_until = now + 300;
+    }
+    let failures = cfg.encryption_failures;
+    save_config(root, &cfg).map_err(|error| error.to_string())?;
+    Ok(failures)
+}
+
+pub fn clear_encryption_failures(root: &Path) -> Result<(), String> {
+    let mut cfg = load_config(root);
+    cfg.encryption_failures = 0;
+    cfg.encryption_locked_until = 0;
+    save_config(root, &cfg).map_err(|e| e.to_string())
+}
+
+pub fn record_encryption_failure(root: &Path) -> Result<u8, String> {
+    let mut cfg = load_config(root);
+    let now = chrono::Utc::now().timestamp();
+    if cfg.encryption_locked_until > now {
+        return Err(format!(
+            "PIN verification locked until {}",
+            cfg.encryption_locked_until
+        ));
+    }
+    cfg.encryption_failures = cfg.encryption_failures.saturating_add(1);
+    if cfg.encryption_failures >= 3 {
+        cfg.encryption_failures = 0;
+        cfg.encryption_locked_until = now + 300;
+    }
+    let failures = cfg.encryption_failures;
+    save_config(root, &cfg).map_err(|e| e.to_string())?;
+    Ok(failures)
 }
 
 #[cfg(unix)]
@@ -178,7 +373,10 @@ pub fn normalize_repo_url(s: &str) -> String {
 }
 
 pub fn preflight(cfg: &Config) -> Result<(), String> {
-    if cfg.repo_url.is_empty() || cfg.base_url.is_empty() || cfg.owner.is_empty() || cfg.repo.is_empty()
+    if cfg.repo_url.is_empty()
+        || cfg.base_url.is_empty()
+        || cfg.owner.is_empty()
+        || cfg.repo.is_empty()
     {
         return Err("Missing repo URL".to_string());
     }
@@ -248,8 +446,7 @@ mod tests {
 
     #[test]
     fn parse_github_api_rewrite() {
-        let (base, owner, repo) =
-            parse_repo_url("https://github.com/alice/notes", true).unwrap();
+        let (base, owner, repo) = parse_repo_url("https://github.com/alice/notes", true).unwrap();
         assert_eq!(base, "https://api.github.com");
         assert_eq!(owner, "alice");
         assert_eq!(repo, "notes");
@@ -263,8 +460,7 @@ mod tests {
 
     #[test]
     fn parse_self_hosted_keeps_host_and_port() {
-        let (base, owner, repo) =
-            parse_repo_url("http://10.0.1.244:8015/bob/repo", true).unwrap();
+        let (base, owner, repo) = parse_repo_url("http://10.0.1.244:8015/bob/repo", true).unwrap();
         assert_eq!(base, "http://10.0.1.244:8015");
         assert_eq!(owner, "bob");
         assert_eq!(repo, "repo");
@@ -272,8 +468,7 @@ mod tests {
 
     #[test]
     fn parse_strips_dot_git() {
-        let (_, owner, repo) =
-            parse_repo_url("https://github.com/alice/notes.git", true).unwrap();
+        let (_, owner, repo) = parse_repo_url("https://github.com/alice/notes.git", true).unwrap();
         assert_eq!(owner, "alice");
         assert_eq!(repo, "notes");
     }
@@ -332,6 +527,7 @@ mod tests {
             repo_url: "https://github.com/a/b".to_string(),
             username: "alice".to_string(),
             token: "ghp_secret".to_string(),
+            encryption_pin: "012345".to_string(),
             use_api: true,
             base_url: "https://api.github.com".to_string(),
             owner: "a".to_string(),
@@ -341,10 +537,170 @@ mod tests {
         };
         save_config(dir.path(), &cfg).unwrap();
         let raw = fs::read_to_string(config_path(dir.path())).unwrap();
-        assert!(!raw.contains("ghp_secret"), "token must not be stored in plaintext");
+        assert!(
+            !raw.contains("ghp_secret"),
+            "token must not be stored in plaintext"
+        );
         let loaded = load_config(dir.path());
         assert_eq!(loaded.token, "ghp_secret");
+        assert_eq!(loaded.encryption_pin, "012345");
+        assert!(loaded.encryption_transition_pin.is_empty());
+        assert!(
+            !raw.contains("012345"),
+            "PIN must not be stored in plaintext"
+        );
         assert!(loaded.public().has_token);
+    }
+
+    #[test]
+    fn transition_pin_round_trips_encrypted_and_survives_failed_attempt_updates() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = Config {
+            username: "alice".into(),
+            encryption_pin: "123456".into(),
+            encryption_transition: true,
+            encryption_transition_pin: "654321".into(),
+            ..Config::default()
+        };
+        save_config(dir.path(), &cfg).unwrap();
+        let raw = fs::read_to_string(config_path(dir.path())).unwrap();
+        assert!(!raw.contains("654321"));
+        assert_eq!(load_config(dir.path()).encryption_transition_pin, "654321");
+        assert!(check_encryption_pin(dir.path(), "123456").unwrap());
+        assert_eq!(load_config(dir.path()).encryption_transition_pin, "654321");
+    }
+
+    #[test]
+    fn encryption_pin_validation_and_lockout_survive_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(valid_encryption_pin(""));
+        assert!(valid_encryption_pin("012345"));
+        assert!(!valid_encryption_pin("12345"));
+        assert!(!valid_encryption_pin("1234567"));
+        assert!(!valid_encryption_pin("12a456"));
+        assert!(!valid_encryption_pin("１２３４５６"));
+        let cfg = Config {
+            encryption_pin: "012345".into(),
+            ..Config::default()
+        };
+        save_config(dir.path(), &cfg).unwrap();
+        for _ in 0..3 {
+            assert!(!check_encryption_pin(dir.path(), "999999").unwrap());
+        }
+        let loaded = load_config(dir.path());
+        assert!(loaded.encryption_locked_until > chrono::Utc::now().timestamp());
+        assert_eq!(loaded.encryption_pin, "012345");
+        assert!(check_encryption_pin(dir.path(), "012345").is_err());
+    }
+
+    #[test]
+    fn remote_decryption_failures_lock_after_three_attempts() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = Config::default();
+        cfg.encryption_pin = "123456".into();
+        save_config(dir.path(), &cfg).unwrap();
+
+        assert_eq!(record_encryption_failure(dir.path()).unwrap(), 1);
+        assert_eq!(load_config(dir.path()).encryption_failures, 1);
+        assert_eq!(record_encryption_failure(dir.path()).unwrap(), 2);
+        assert_eq!(load_config(dir.path()).encryption_failures, 2);
+        assert_eq!(record_encryption_failure(dir.path()).unwrap(), 0);
+        let locked = load_config(dir.path());
+        assert_eq!(locked.encryption_failures, 0);
+        assert!(locked.encryption_locked_until >= chrono::Utc::now().timestamp() + 299);
+        assert!(record_encryption_failure(dir.path()).is_err());
+        assert_eq!(load_config(dir.path()).encryption_failures, 0);
+    }
+
+    #[test]
+    fn successful_pin_check_clears_decryption_lockout_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = Config {
+            encryption_pin: "123456".into(),
+            encryption_failures: 2,
+            ..Config::default()
+        };
+        save_config(dir.path(), &cfg).unwrap();
+        assert!(check_encryption_pin(dir.path(), "123456").unwrap());
+        cfg = load_config(dir.path());
+        assert_eq!(cfg.encryption_failures, 0);
+        assert_eq!(cfg.encryption_locked_until, 0);
+    }
+
+    #[test]
+    fn settings_can_keep_masked_encryption_pin_or_explicitly_clear_it() {
+        assert_eq!(resolve_encryption_pin("123456", "", true), "123456");
+        assert_eq!(resolve_encryption_pin("123456", "", false), "");
+        assert_eq!(resolve_encryption_pin("123456", "654321", false), "654321");
+    }
+
+    #[test]
+    fn transition_target_pin_success_resets_failed_attempts() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = Config {
+            encryption_pin: "111111".into(),
+            encryption_transition_pin: "222222".into(),
+            encryption_transition: true,
+            encryption_failures: 2,
+            ..Config::default()
+        };
+        save_config(dir.path(), &cfg).unwrap();
+        assert!(check_transition_pin(dir.path(), "222222").unwrap());
+        cfg = load_config(dir.path());
+        assert_eq!(cfg.encryption_failures, 0);
+        assert_eq!(cfg.encryption_locked_until, 0);
+        assert_eq!(cfg.encryption_transition_pin, "222222");
+    }
+
+    #[test]
+    fn correct_pin_attempt_resets_failures_and_expired_lockout() {
+        let mut cfg = Config {
+            encryption_pin: "123456".into(),
+            encryption_failures: 2,
+            encryption_locked_until: 999,
+            ..Config::default()
+        };
+        update_pin_attempt(&mut cfg, true, false, "123456", 1000);
+        assert_eq!(cfg.encryption_failures, 0);
+        assert_eq!(cfg.encryption_locked_until, 0);
+    }
+
+    #[test]
+    fn incorrect_transition_pin_keeps_transition_and_persists_lockout() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = Config {
+            encryption_pin: "111111".into(),
+            encryption_transition_pin: "222222".into(),
+            encryption_transition: true,
+            encryption_failures: 2,
+            ..Config::default()
+        };
+        save_config(dir.path(), &cfg).unwrap();
+        assert!(!check_transition_pin(dir.path(), "333333").unwrap());
+        let updated = load_config(dir.path());
+        assert!(updated.encryption_transition);
+        assert_eq!(updated.encryption_pin, "111111");
+        assert_eq!(updated.encryption_transition_pin, "222222");
+        assert_eq!(updated.encryption_failures, 0);
+        assert!(updated.encryption_locked_until > chrono::Utc::now().timestamp());
+        assert!(check_transition_pin(dir.path(), "333333").is_err());
+    }
+
+    #[test]
+    fn transition_probe_does_not_count_as_submitted_attempt() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = Config {
+            encryption_pin: "111111".into(),
+            encryption_transition_pin: "222222".into(),
+            encryption_transition: true,
+            encryption_failures: 1,
+            ..Config::default()
+        };
+        save_config(dir.path(), &cfg).unwrap();
+        assert!(verify_transition_candidate(dir.path(), "222222").unwrap());
+        assert_eq!(load_config(dir.path()).encryption_failures, 1);
+        assert!(!check_transition_pin(dir.path(), "333333").unwrap());
+        assert_eq!(load_config(dir.path()).encryption_failures, 2);
     }
 
     #[test]
@@ -370,15 +726,24 @@ mod tests {
         };
         assert!(preflight(&full).is_ok());
         assert_eq!(
-            preflight(&Config { username: String::new(), ..full.clone() }),
+            preflight(&Config {
+                username: String::new(),
+                ..full.clone()
+            }),
             Err("Missing username".to_string())
         );
         assert_eq!(
-            preflight(&Config { token: String::new(), ..full.clone() }),
+            preflight(&Config {
+                token: String::new(),
+                ..full.clone()
+            }),
             Err("Missing token".to_string())
         );
         assert_eq!(
-            preflight(&Config { repo_url: String::new(), ..full }),
+            preflight(&Config {
+                repo_url: String::new(),
+                ..full
+            }),
             Err("Missing repo URL".to_string())
         );
     }

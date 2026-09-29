@@ -131,22 +131,34 @@ impl SyncClient {
     }
 
     fn trees_url(&self) -> String {
-        format!("{}/repos/{}/{}/git/trees", self.base_url, self.owner, self.repo)
+        format!(
+            "{}/repos/{}/{}/git/trees",
+            self.base_url, self.owner, self.repo
+        )
     }
 
     fn git_commits_url(&self) -> String {
-        format!("{}/repos/{}/{}/git/commits", self.base_url, self.owner, self.repo)
+        format!(
+            "{}/repos/{}/{}/git/commits",
+            self.base_url, self.owner, self.repo
+        )
     }
 
     fn refs_url(&self) -> String {
-        format!("{}/repos/{}/{}/git/refs", self.base_url, self.owner, self.repo)
+        format!(
+            "{}/repos/{}/{}/git/refs",
+            self.base_url, self.owner, self.repo
+        )
     }
 
     async fn send(&self, rb: RequestBuilder) -> Result<(StatusCode, Vec<u8>), SyncError> {
         let auth = if self.use_api {
             format!("token {}", self.token)
         } else {
-            format!("Basic {}", B64.encode(format!("{}:{}", self.username, self.token)))
+            format!(
+                "Basic {}",
+                B64.encode(format!("{}:{}", self.username, self.token))
+            )
         };
         let resp = rb
             .header("Authorization", auth)
@@ -216,7 +228,11 @@ impl SyncClient {
     }
 
     pub async fn head(&self, r: &str) -> Result<String, SyncError> {
-        let r = if r.is_empty() { self.branch.as_str() } else { r };
+        let r = if r.is_empty() {
+            self.branch.as_str()
+        } else {
+            r
+        };
         let (status, body) = self
             .send(self.http.request(Method::GET, self.commits_url(r)))
             .await?;
@@ -264,9 +280,7 @@ impl SyncClient {
     }
 
     pub async fn get_at_ref(&self, path: &str, r: &str) -> Result<(String, String), SyncError> {
-        let (status, body) = self
-            .send(self.get_ref(self.contents_url(path), r))
-            .await?;
+        let (status, body) = self.send(self.get_ref(self.contents_url(path), r)).await?;
         self.decode_file(status, body, &format!("get at ref {path}"))
     }
 
@@ -291,8 +305,7 @@ impl SyncClient {
         let decoded = B64
             .decode(raw)
             .map_err(|e| SyncError::Json(e.to_string()))?;
-        let content =
-            String::from_utf8(decoded).map_err(|e| SyncError::Json(e.to_string()))?;
+        let content = String::from_utf8(decoded).map_err(|e| SyncError::Json(e.to_string()))?;
         Ok((content, f.sha))
     }
 
@@ -382,8 +395,11 @@ impl SyncClient {
             Some(s) => s,
             None => return Ok(()),
         };
-        let commit_sha = self.create_orphan_commit(&tree_sha, "init draftnote").await?;
-        self.create_branch_ref(&self.branch.clone(), &commit_sha).await
+        let commit_sha = self
+            .create_orphan_commit(&tree_sha, "init draftnote")
+            .await?;
+        self.create_branch_ref(&self.branch.clone(), &commit_sha)
+            .await
     }
 
     async fn create_init_tree(&self) -> Result<Option<String>, SyncError> {
@@ -411,7 +427,11 @@ impl SyncClient {
         parse_sha(&body).map(Some)
     }
 
-    async fn create_orphan_commit(&self, tree_sha: &str, message: &str) -> Result<String, SyncError> {
+    async fn create_orphan_commit(
+        &self,
+        tree_sha: &str,
+        message: &str,
+    ) -> Result<String, SyncError> {
         let payload = json!({
             "message": message,
             "tree": tree_sha,
@@ -453,7 +473,10 @@ impl SyncClient {
 
     pub async fn get_remote(&self) -> Result<String, SyncError> {
         let (status, body) = self
-            .send(self.http.request(Method::GET, format!("{}/remote", self.base_url)))
+            .send(
+                self.http
+                    .request(Method::GET, format!("{}/remote", self.base_url)),
+            )
             .await?;
         if status == StatusCode::NOT_FOUND {
             return Ok(String::new());
@@ -495,7 +518,10 @@ impl SyncClient {
         page: i64,
         per_page: i64,
     ) -> Result<Vec<CommitInfo>, SyncError> {
-        let url = format!("{}/repos/{}/{}/commits", self.base_url, self.owner, self.repo);
+        let url = format!(
+            "{}/repos/{}/{}/commits",
+            self.base_url, self.owner, self.repo
+        );
         let rb = self.http.request(Method::GET, url).query(&[
             ("path", path.to_string()),
             ("sha", self.branch.clone()),
@@ -536,12 +562,18 @@ impl SyncClient {
         }
         impl Default for Author {
             fn default() -> Self {
-                Author { name: String::new(), date: String::new() }
+                Author {
+                    name: String::new(),
+                    date: String::new(),
+                }
             }
         }
         impl Default for Commit {
             fn default() -> Self {
-                Commit { message: String::new(), author: Author::default() }
+                Commit {
+                    message: String::new(),
+                    author: Author::default(),
+                }
             }
         }
         let raw: Vec<Raw> = serde_json::from_slice(&body)?;
@@ -662,8 +694,8 @@ mod tests {
                         buf.extend_from_slice(&tmp[..n]);
                     }
                     let head = String::from_utf8_lossy(&buf[..head_end - 4]).to_string();
-                    let body = String::from_utf8_lossy(&buf[head_end..head_end + content_len])
-                        .to_string();
+                    let body =
+                        String::from_utf8_lossy(&buf[head_end..head_end + content_len]).to_string();
                     let rec = parse_request(&head, body);
                     let (code, resp_body) = handler(&rec);
                     reqs.lock().unwrap().push(rec);
@@ -716,7 +748,13 @@ mod tests {
                 headers.push((k.to_string(), v.to_string()));
             }
         }
-        Recorded { method, path, query, headers, body }
+        Recorded {
+            method,
+            path,
+            query,
+            headers,
+            body,
+        }
     }
 
     fn client(base: &str) -> SyncClient {
@@ -890,9 +928,15 @@ mod tests {
         .await;
         client(&m.base).ensure_branch().await.unwrap();
         let reqs = m.reqs.lock().unwrap();
-        let tree = reqs.iter().find(|r| r.path.ends_with("/git/trees")).unwrap();
+        let tree = reqs
+            .iter()
+            .find(|r| r.path.ends_with("/git/trees"))
+            .unwrap();
         assert!(tree.body.contains(r#""path""#) && tree.body.contains("README.md"));
-        let commit = reqs.iter().find(|r| r.path.ends_with("/git/commits")).unwrap();
+        let commit = reqs
+            .iter()
+            .find(|r| r.path.ends_with("/git/commits"))
+            .unwrap();
         assert!(commit.body.contains(r#""parents":[]"#));
         assert!(commit.body.contains(r#""tree":"treesha""#));
         let rf = reqs.iter().find(|r| r.path.ends_with("/git/refs")).unwrap();
@@ -911,7 +955,10 @@ mod tests {
             )
         })
         .await;
-        let got = client(&m.base).compare("base-sha", "head-sha").await.unwrap();
+        let got = client(&m.base)
+            .compare("base-sha", "head-sha")
+            .await
+            .unwrap();
         assert_eq!(got.len(), 4);
         assert_eq!(got[0].path, "notes/a.json");
         assert_eq!(got[0].status, "added");

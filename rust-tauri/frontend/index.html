@@ -7,6 +7,7 @@
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
+    <div id="sync-error-msg" class="hidden" role="alert"></div>
     <div id="app">
       <nav id="nav" tabindex="0">
         <div class="nav-brand">
@@ -165,6 +166,11 @@
           <span>Sync interval (seconds)</span>
           <input id="cfg-interval" type="number" min="1" step="1" />
         </label>
+        <label class="field">
+          <span>Encryption PIN</span>
+          <input id="cfg-encryption-pin" type="password" inputmode="numeric" maxlength="6" autocomplete="new-password" />
+        </label>
+        <div id="cfg-pin-lock-msg" class="cfg-msg hidden"></div>
         <div id="cfg-validate-msg" class="cfg-msg hidden"></div>
         <div class="modal-actions">
           <button id="cfg-validate" class="btn-plain">Validate</button>

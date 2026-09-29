@@ -6,6 +6,7 @@ go-wails/build/bin/
 backend/draftnote-backend
 spec/
 rust-tauri/src-tauri/target/
+!rust-tauri/src-tauri/Cargo.lock
 rust-tauri/src-tauri/gen/
 rust-tauri/frontend/node_modules/
 rust-tauri/frontend/dist/

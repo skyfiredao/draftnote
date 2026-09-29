@@ -4,6 +4,7 @@ use crate::local::{Store, StoreError};
 use crate::note::{self, Note, NoteMeta};
 use crate::sync::{EngineError, SyncResult, Syncer};
 use crate::syncclient::SyncClient;
+use std::sync::Arc;
 
 pub use portio::{ExportFormat, ExportView, ExportViewKind};
 
@@ -15,6 +16,7 @@ pub struct Config {
     pub username: String,
     pub token: String,
     pub use_api: bool,
+    pub encryption_pin: String,
     pub on_note_changed: Option<Box<dyn Fn(&str) + Send + Sync>>,
 }
 
@@ -46,13 +48,30 @@ impl App {
             &cfg.token,
             cfg.use_api,
         );
-        let mut syncer = Syncer::new(store, client);
+        let encryption_key = if cfg.encryption_pin.is_empty() {
+            None
+        } else {
+            Some(crate::config::encryption_key(&cfg.encryption_pin))
+        };
+        let mut syncer = Syncer::new_with_key(store, client, encryption_key);
         syncer.on_note_changed = cfg.on_note_changed;
         let _ = syncer.load_failed();
         Ok(App {
             syncer,
             configured: !cfg.base_url.is_empty(),
         })
+    }
+
+    pub(crate) fn set_sync_error_callback(&mut self, callback: Arc<dyn Fn(String) + Send + Sync>) {
+        self.syncer.on_sync_error = Some(callback);
+    }
+
+    pub fn set_encryption_pin(&self, pin: &str) {
+        self.syncer.set_encryption_key(if pin.is_empty() {
+            None
+        } else {
+            Some(crate::config::encryption_key(pin))
+        });
     }
 
     pub(crate) fn store(&self) -> &Store {
@@ -87,8 +106,10 @@ impl App {
 
     pub fn notes_by_tag(&self, tag: &str) -> Result<Vec<NoteMeta>, EngineError> {
         let metas = self.store().list_meta()?;
-        let mut filtered: Vec<NoteMeta> =
-            note::filter_meta(&metas, tag).into_iter().cloned().collect();
+        let mut filtered: Vec<NoteMeta> = note::filter_meta(&metas, tag)
+            .into_iter()
+            .cloned()
+            .collect();
         self.apply_sync_failed(&mut filtered);
         Ok(filtered)
     }
@@ -176,6 +197,22 @@ impl App {
         Ok(metas.len())
     }
 
+    pub async fn recover_remote_pin(&self, pin: &str) -> Result<bool, EngineError> {
+        self.syncer
+            .recover_remote_pin(pin)
+            .await
+            .map_err(Into::into)
+    }
+
+    pub async fn rewrite_all(&self, encryption_pin: &str) -> Result<usize, EngineError> {
+        let key = if encryption_pin.is_empty() {
+            None
+        } else {
+            Some(crate::config::encryption_key(encryption_pin))
+        };
+        self.syncer.change_encryption_and_rewrite(key).await
+    }
+
     pub async fn get_server_remote(&self) -> Result<String, EngineError> {
         Ok(self.syncer.client.get_remote().await?)
     }
@@ -217,7 +254,7 @@ impl App {
         if content.is_empty() {
             return Ok(String::new());
         }
-        match note::decode(content.as_bytes()) {
+        match note::decode_remote(content.as_bytes(), self.syncer.encryption_key().as_ref()) {
             Ok(n) => Ok(n.body),
             Err(_) => Ok(content),
         }
@@ -225,8 +262,15 @@ impl App {
 
     pub async fn restore_revision(&self, id: &str, sha: &str) -> Result<(), EngineError> {
         let (content, _) = self.syncer.client.get_at_ref(&note_path(id), sha).await?;
-        let n = note::decode(content.as_bytes()).map_err(StoreError::from)?;
-        self.store().update(id, Some(&n.title), Some(n.tags), &n.body)?;
+        let n = note::decode_remote(content.as_bytes(), self.syncer.encryption_key().as_ref())
+            .map_err(|e| {
+                StoreError::Json(serde_json::Error::io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    e,
+                )))
+            })?;
+        self.store()
+            .update(id, Some(&n.title), Some(n.tags), &n.body)?;
         self.syncer.mark_unsynced(id);
         self.syncer.push(id).await.map(|_| ())
     }
@@ -245,6 +289,7 @@ pub(crate) mod tests_support {
             username: String::new(),
             token: "tok".to_string(),
             use_api: true,
+            encryption_pin: String::new(),
             on_note_changed: None,
         })
         .unwrap()
@@ -269,7 +314,8 @@ mod tests {
     #[test]
     fn tags_and_filter() {
         let a = test_app();
-        a.create_note("A", vec!["医案".into(), "太阳病".into()], "a").unwrap();
+        a.create_note("A", vec!["医案".into(), "太阳病".into()], "a")
+            .unwrap();
         a.create_note("B", vec!["笔记".into()], "b").unwrap();
         assert_eq!(a.all_tags().unwrap().len(), 3);
         assert_eq!(a.notes_by_tag("医案").unwrap().len(), 1);
@@ -306,6 +352,7 @@ mod tests {
             username: String::new(),
             token: String::new(),
             use_api: false,
+            encryption_pin: String::new(),
             on_note_changed: None,
         })
         .unwrap();

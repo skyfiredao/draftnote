@@ -955,6 +955,19 @@ body {
   display: none;
 }
 
+#sync-error-msg:not(.hidden) {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  z-index: 1600;
+  max-width: min(420px, 90vw);
+  padding: 10px 14px;
+  border-radius: 6px;
+  background: var(--nav-bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+
 .modal-card {
   background: var(--nav-bg);
   border: 1px solid var(--border);
@@ -1429,4 +1442,3 @@ body.mobile #editor-more {
     flex: 1;
   }
 }
-
