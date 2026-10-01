@@ -2,7 +2,7 @@
 name = "draftnote-core"
 version = "0.1.0"
 edition = "2021"
-description = "draftnote core (Rust port of the Go/Wails core)"
+description = "draftnote client core"
 
 [lib]
 name = "draftnote_core"
